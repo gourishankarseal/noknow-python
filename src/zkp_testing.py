@@ -2,12 +2,14 @@
 Extremely simple example of NoKnow ZK Proof implementation
 """
 from getpass import getpass
-from noknow.core import ZK, ZKSignature, ZKParameters, ZKData, ZKProof
+from src.core import ZK, ZKSignature, ZKParameters, ZKData, ZKProof
+# from noknow.core import ZK, ZKSignature, ZKParameters, ZKData, ZKProof
 from queue import Queue
 from threading import Thread
 import os
 from utils import check_ref_code, get_ce_code
 import pandas as pd
+from noknow.utils.crypto import hash_numeric
 
 
 def client(iq: Queue, oq: Queue):
@@ -62,18 +64,63 @@ def server(iq: Queue, oq: Queue):
         token = ZKData.load(proof.data, ":")
 
         # In this example, the server signs the token so it can be sure it has not been modified
-        if server_zk.verify(token, server_signature):
-            oq.put(True)
-        else:
-            oq.put(False)
-            # oq.put(client_zk.verify(proof, client_signature, data=token))
 
+        # if server_zk.verify(token,
+        #                     server_signature,
+        #                     ):
+        #     oq.put(True)
+        # else:
+        #     # oq.put(False)
+        #     oq.put(client_zk.verify(proof, client_signature, data=token))
+
+        oq.put(client_zk.verify(proof, client_signature, data=token))
+
+
+def my_client(iq: Queue, oq: Queue):
+
+    client_zk = ZK.new(curve_name="secp256k1", hash_alg="sha3_256")
+
+    # Create signature and send to server
+    ref_code = getpass("Enter Ref Code: ")
+    oq.put(ref_code)
+
+    signature = client_zk.create_signature(ref_code)  # A
+    oq.put(signature.dump())
+
+    token = iq.get()
+    client_input_ref_code_ce_code = getpass("Enter Ref Code,CE Code : ")
+    proof = client_zk.create_client_proof(client_input_ref_code_ce_code, token)
+    oq.put(proof)
+    print("Success!" if iq.get() else "Failure!")
+
+
+def my_server(iq: Queue, oq: Queue):
+    data = pd.read_csv('data.csv')
+    ref_code = iq.get()
+    if not check_ref_code(ref_code, data):
+        print('Received invalid Ref Code from client', ref_code, 'exiting')
+        os._exit(1)
+    else:
+        ce_code = get_ce_code(ref_code, data)
+        server_zk = ZK.new(curve_name="secp384r1", hash_alg="sha3_512")
+        server_signature = server_zk.create_signature(ce_code)
+
+        sig = iq.get()
+        client_signature = ZKSignature.load(sig)
+        token = server_zk.create_server_hash(server_signature, client_signature)
+        oq.put(token)
+
+        proof = iq.get()
+        validation = server_zk.create_server_proof(proof, token,
+                                                   server_signature,
+                                                   client_signature)
+        oq.put(validation)
 
 def main():
     q1, q2 = Queue(), Queue()
     threads = [
-        Thread(target=client, args=(q1, q2)),
-        Thread(target=server, args=(q2, q1)),
+        Thread(target=my_client, args=(q1, q2)),
+        Thread(target=my_server, args=(q2, q1)),
     ]
     # for func in [Thread.start, Thread.join]:
     #     for thread in threads:
